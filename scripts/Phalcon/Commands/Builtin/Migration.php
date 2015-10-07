@@ -4,7 +4,7 @@
   +------------------------------------------------------------------------+
   | Phalcon Developer Tools                                                |
   +------------------------------------------------------------------------+
-  | Copyright (c) 2011-2014 Phalcon Team (http://www.phalconphp.com)       |
+  | Copyright (c) 2011-2015 Phalcon Team (http://www.phalconphp.com)       |
   +------------------------------------------------------------------------+
   | This source file is subject to the New BSD License that is bundled     |
   | with this package in the file docs/LICENSE.txt.                        |
@@ -24,101 +24,44 @@ use Phalcon\Builder;
 use Phalcon\Builder\BuilderException;
 use Phalcon\Script\Color;
 use Phalcon\Commands\Command;
-use Phalcon\Commands\CommandsInterface;
 use Phalcon\Migrations;
+use Phalcon\Config;
+use Phalcon\Config\Adapter\Ini as IniConfig;
+use Phalcon\Config\Adapter\Json as JsonConfig;
+use Phalcon\Config\Adapter\Yaml as YamlConfig;
 
 /**
- * Migration
+ * Migration Command
  *
  * Generates/Run a migration
  *
- * @category 	Phalcon
- * @package 	Command
- * @subpackage  Controller
- * @copyright   Copyright (c) 2011-2014 Phalcon Team (team@phalconphp.com)
- * @license 	New BSD License
+ * @package     Phalcon\Commands\Builtin
+ * @copyright   Copyright (c) 2011-2015 Phalcon Team (team@phalconphp.com)
+ * @license     New BSD License
  */
-class Migration extends Command implements CommandsInterface
+class Migration extends Command
 {
 
     protected $_possibleParameters = array(
-        'action=s' 		=> "Generates a Migration [generate|run]",
-        'config=s' 		=> "Configuration file.",
-        'migrations=s'	=> "Migrations directory.",
-        'directory=s' 	=> "Directory where the project was created.",
-        'table=s' 		=> "Table to migrate. Default: all.",
-        'version=s' 	=> "Version to migrate.",
-        'force' 		=> "Forces to overwrite existing migrations.",
+        'action=s'          => "Generates a Migration [generate|run].",
+        'config=s'          => "Configuration file.",
+        'migrations=s'      => "Migrations directory.",
+        'directory=s'       => "Directory where the project was created.",
+        'table=s'           => "Table to migrate. Default: all.",
+        'version=s'         => "Version to migrate.",
+        'force'             => "Forces to overwrite existing migrations.",
+        'no-auto-increment' => "Disable auto increment (Generating only).",
+        'data=s'            => "Export data [always|oncreate] (Import data when run migration).",
     );
 
     /**
-     * Determines correct adapter by file name
-     * and load config
+     * Executes the command
      *
-     * @param $fileName
-     *
-     * @return bool|mixed|\Phalcon\Config\Adapter\Ini|\Phalcon\Config\Adapter\Json
-     */
-    protected static function _loadConfig($fileName)
-    {
-        $pathInfo = pathinfo($fileName);
-
-        if (isset($pathInfo['extension'])) {
-            $extension = $pathInfo['extension'];
-            if ($extension === 'php') {
-                return include($fileName);
-            } elseif ($extension === 'ini') {
-                return new \Phalcon\Config\Adapter\Ini($fileName);
-            } elseif ($extension === 'json') {
-                return new \Phalcon\Config\Adapter\Json($fileName);
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @param $path
-     *
-     * @return mixed|\Phalcon\Config\Adapter\Ini|\Phalcon\Config\Adapter\Json
-     * @throws \Phalcon\Builder\BuilderException
-     */
-    protected static function _getConfig($path)
-    {
-        foreach (array('app/config/', 'config/') as $configPath) {
-            if (file_exists($path . $configPath. "config.ini")) {
-                return new \Phalcon\Config\Adapter\Ini($path . $configPath. "/config.ini");
-            } elseif (file_exists($path . $configPath. "/config.php")) {
-                $config = include($path . $configPath. "/config.php");
-
-                return $config;
-            } elseif (file_exists($path . $configPath. "/config.json")) {
-                return new \Phalcon\Config\Adapter\Json($path . $configPath. "/config.json");
-            }
-        }
-
-        $directory = new \RecursiveDirectoryIterator('.');
-        $iterator = new \RecursiveIteratorIterator($directory);
-        foreach ($iterator as $f) {
-            if (preg_match('/config\.php$/i', $f->getPathName())) {
-                $config = include($f->getPathName());
-
-                return $config;
-            } elseif (preg_match('/config\.ini$/', $f->getPathName())) {
-                return new \Phalcon\Config\Adapter\Ini($f->getPathName());
-            } elseif (preg_match('/config\.json$/', $f->getPathName())) {
-                return new \Phalcon\Config\Adapter\Json($f->getPathName());
-            }
-        }
-        throw new BuilderException('Builder can\'t locate the configuration file');
-    }
-
-    /**
-     * Run the command
+     * @param $parameters
+     * @return void
      */
     public function run($parameters)
     {
-
         if ($this->isReceivedOption('table')) {
             $tableName = $this->getOption('table');
         } else {
@@ -127,65 +70,74 @@ class Migration extends Command implements CommandsInterface
 
         $path = '';
         if ($this->isReceivedOption('directory')) {
-            $path = $this->getOption('directory') .'/';
+            $path = $this->getOption('directory');
+        }
+
+        $path = realpath($path) . DIRECTORY_SEPARATOR;
+
+        if ($this->isReceivedOption('config')) {
+            $config = $this->loadConfig($path . $this->getOption('config'));
+        } else {
+            $config = $this->getConfig($path);
         }
 
         if ($this->isReceivedOption('migrations')) {
             $migrationsDir = $path.$this->getOption('migrations');
+        } elseif (isset($config['application']['migrationsDir'])) {
+            $migrationsDir = $config['application']['migrationsDir'];
+            if (!$this->path->isAbsolutePath($migrationsDir)) {
+                $migrationsDir = $path . $migrationsDir;
+            }
         } else {
-            $migrationsDir = $path.'app/migrations';
+            if (file_exists($path.'app')) {
+                $migrationsDir = $path.'app/migrations';
+            } elseif (file_exists($path.'apps')) {
+                $migrationsDir = $path.'apps/migrations';
+            } else {
+                $migrationsDir = $path.'migrations';
+            }
         }
 
         $exportData = $this->getOption('data');
         $originalVersion = $this->getOption('version');
 
-        if ($this->isReceivedOption('config')) {
-            $configPath = $path . $this->getOption('config');
-            $config = $this->_loadConfig($configPath);
-        } else {
-            $config = $this->_getConfig($path);
-        }
-
         $action = $this->getOption(array('action', 1));
 
         $version = $this->getOption('version');
-        
-        
-
 
         if ($action == 'generate') {
             Migrations::generate(array(
-                'directory' => $path,
-                'tableName' => $tableName,
-                'exportData' => $exportData,
-                'migrationsDir' => $migrationsDir,
+                'directory'       => $path,
+                'tableName'       => $tableName,
+                'exportData'      => $exportData,
+                'migrationsDir'   => $migrationsDir,
                 'originalVersion' => $originalVersion,
-                'force' => $this->isReceivedOption('force'),
-                'config' => $config
+                'force'           => $this->isReceivedOption('force'),
+                'no-ai'           => $this->isReceivedOption('no-auto-increment'),
+                'config'          => $config
             ));
         } else {
             if ($action == 'run') {
                 Migrations::run(array(
-                    'directory' => $path,
-                    'tableName' => $tableName,
+                    'directory'     => $path,
+                    'tableName'     => $tableName,
                     'migrationsDir' => $migrationsDir,
-                    'force' => $this->isReceivedOption('force'),
-                    'config' => $config ,
-                    'version' => $version ,
+                    'force'         => $this->isReceivedOption('force'),
+                    'config'        => $config,
+                    'version'       => $version,
                 ));
             }
         }
-
     }
 
     /**
      * Returns the command identifier
      *
-     * @return string
+     * @return array
      */
     public function getCommands()
     {
-        return array('migration');
+        return array('migration', 'create-migration');
     }
 
     /**
@@ -222,11 +174,10 @@ class Migration extends Command implements CommandsInterface
     /**
      * Returns number of required parameters for this command
      *
-     * @return int
+     * @return integer
      */
     public function getRequiredParams()
     {
         return 1;
     }
-
 }
